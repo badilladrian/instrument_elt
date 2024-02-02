@@ -1,2 +1,2 @@
 # instrument_elt
-Task for Wipro Client
+Draft of a high I/O throughput ELT pipeline
