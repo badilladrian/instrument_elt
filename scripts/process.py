@@ -2,75 +2,98 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, FloatType
 import pyspark.pandas as ps
 import os
+import logging
 
-"""
-This is an injectable scrip to the docker strategy.
-Most of the time-investment was upon R&D to design 
-a full-bateries easy to run strategy that can scale.
+from settings import *
 
-This now working-- can be Pythonistic on a feature-brach
-"""
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-# Init vars
-FILE_NAME = "example.csv"
-START_DATE = "01-Nov-2014"
-END_DATE = "30-Nov-2014"
 
-# Converting panda datetime object
-START_DATE = ps.to_datetime(START_DATE, format='%d-%b-%Y')
-END_DATE = ps.to_datetime(END_DATE, format='%d-%b-%Y')
+def create_spark_session() -> SparkSession:
+    """
+    Create a Spark session.
+    """
+    spark: SparkSession = SparkSession.builder.master(MASTER_URL).appName(APP_NAME).getOrCreate()
+    return spark
 
-# Create a spark session
-spark = SparkSession.builder \
-    .master("local") \
-    .appName("py-elt") \
-    .getOrCreate()
 
-# Define the schema of the input data
-schema = StructType([
-    StructField("NAME", StringType(), True),
-    StructField("DATE", StringType(), True),
-    StructField("VALUE", FloatType(), True)
-])
+def read_input_data(spark: SparkSession, file_path: str = INPUT_FILE_PATH) -> ps.DataFrame:
+    """
+    Read input data from file with provided schema.
+    """
+    data_schema: StructType = StructType(
+        [  # ? Data schema could be passed as a parameter
+            StructField(Columns.NAME, StringType(), True),
+            StructField(Columns.DATE, StringType(), True),
+            StructField(Columns.VALUE, FloatType(), True),
+        ]
+    )
+    data_frame: ps.DataFrame = spark.read.csv(file_path, header=True, schema=data_schema)
+    data_frame.cache()
+    return data_frame
 
-df = spark.read.csv(FILE_NAME,
-                    header=True, 
-                    schema=schema)
-df.cache()                  
-psdf = df.pandas_api()      
 
-# Converting the DATE column to a DateType
-psdf["DATE"] = ps.to_datetime(psdf["DATE"], format='%d-%b-%Y')
+def show_data(data_frame: ps.DataFrame) -> None:
+    data_frame.show()
 
-# INSTRUMENT1
-ins_1 = psdf[psdf["NAME"] == "INSTRUMENT1"]
 
-# INSTRUMENT2
-ins_2 = psdf[(psdf["NAME"] == "INSTRUMENT2") & 
-            (psdf["DATE"] >= START_DATE) & 
-            (psdf["DATE"] <= END_DATE)]
+def process_data(data_frame: ps.DataFrame) -> tuple[float, float, float]:
+    """
+    Process input data for calculation of results for each instrument.
+    """
+    ps_data_frame: ps.DataFrame = data_frame.pandas_api()
+    ps_data_frame[Columns.DATE] = ps.to_datetime(ps_data_frame[Columns.DATE], format=DATE_FORMAT)
 
-# INSTRUMENT3
-ins_3 = psdf[psdf["NAME"] == "INSTRUMENT3"]
+    # Calculate mean Inst 1
+    instrument_1: ps.DataFrame = ps_data_frame[ps_data_frame[Columns.NAME] == 'INSTRUMENT1']
 
-# Calculating the results
-ins_1_result = ins_1["VALUE"].mean()
-ins_2_result = ins_2["VALUE"].mean()
-ins_3_result = ins_3["VALUE"].max()
+    # Calculate mean Inst 2 filtered by date
+    instrument_2: ps.DataFrame = ps_data_frame[
+        (ps_data_frame[Columns.NAME] == 'INSTRUMENT2')
+        & (ps_data_frame[Columns.DATE] >= FILTERED_START_DATE)
+        & (ps_data_frame[Columns.DATE] <= FILTERED_END_DATE)
+    ]
+    # Calculate max Inst 3
+    instrument_3: ps.DataFrame = ps_data_frame[ps_data_frame[Columns.NAME] == 'INSTRUMENT3']
 
-# Printing the results
-print(f"INSTRUMENT1 MEAN: {ins_1_result}")
-print(f"INSTRUMENT2 MEAN (NOV 2014): {ins_2_result}")
-print(f"INSTRUMENT3 MAX: {ins_3_result}")
+    instrument_1_result: float = instrument_1['VALUE'].mean()
+    instrument_2_result: float = instrument_2['VALUE'].mean()
+    instrument_3_result: float = instrument_3['VALUE'].max()
 
-# Saving the results
-# The use of cat on p*.csv is to merge the partitions into a single file
-ins_1.to_csv(path=r'%s/output/instrument1', header=False)
-os.system("cat %s/output/instrument1/p*.csv > instrument1.csv")
-ins_2.to_csv(path=r'%s/output/instrument2', header=False)
-os.system("cat %s/output/instrument2/p*.csv > instrument2.csv")
-ins_3.to_csv(path=r'%s/output/instrument3', header=False)
-os.system("cat %s/output/instrument3/p*.csv > instrument3.csv")
+    return instrument_1_result, instrument_2_result, instrument_3_result
 
-# stop node
-spark.stop()
+
+def save_results(instrument: ps.DataFrame, result: str, output_path: str) -> None:
+    """
+    Save instrument results to an output directory file.
+    """
+    instrument.to_csv(path=output_path, header=False)
+    os.system(f'cat {output_path}/p*.csv > {result}.csv')
+
+
+def main() -> None:
+    """
+    Main function to process input data and calculate results for each instrument.
+    """
+    # Create a Spark session and read input data
+    spark: SparkSession = create_spark_session()
+    data_frame: ps.DataFrame = read_input_data(spark)
+
+    # Process data to calculate instrument results
+    instrument_results: tuple[float, float, float] = process_data(data_frame)
+
+    # Log instrument results
+    logger.debug('Instrument 1 Mean: %s', instrument_results[0])
+    logger.debug('Instrument 2 Mean filtered by : %s', instrument_results[1])
+    logger.debug('Instrument 3 Max: %s', instrument_results[2])
+
+    # Save results for each instrument
+    for inst_id, result in enumerate(instrument_results, start=1):
+        save_results(data_frame, f'instrument{inst_id}', result, f'{OUTPUT_FILE_PATH}/output_results/instrument{inst_id}')
+
+    # Stop Spark session
+    spark.stop()
+
+
+main()

@@ -1,9 +1,10 @@
+---
 version: '3.9'
 
 services:
   spark-master:
     container_name: spark-master
-    build: 
+    build:
       context: .
       dockerfile: master.Dockerfile
     ports:
@@ -12,15 +13,15 @@ services:
 
   spark-worker-1:
     container_name: spark-worker-1
-    build: 
+    build:
       context: .
       dockerfile: worker.Dockerfile
     depends_on:
       - spark-master
-  
+
   spark-worker-2:
     container_name: spark-worker-2
-    build: 
+    build:
       context: .
       dockerfile: worker.Dockerfile
     depends_on:
